@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import driver from '../neo4j';
-import { signupInput, signinInput, blogPostInput, updateBlogIdInput, updateBlogPayloadInput, deleteBlogInput, likeBlogInput, bookmarkBlogInput , commentBlogInput , deleteCommentInput} from '../types';
+import { signupInput, signinInput, blogPostInput, updateBlogIdInput, updateBlogPayloadInput, deleteBlogInput, likeBlogInput, bookmarkBlogInput , commentBlogInput , deleteCommentInput, replyCommentInput} from '../types';
 import bcrypt from 'bcryptjs';
 import zod from 'zod';
 import jwt, { SignOptions } from 'jsonwebtoken';
@@ -605,7 +605,7 @@ export const commentBlog = async (req: Request, res: Response): Promise<any> => 
             `
                 MATCH (u:User) , (b:Blog)
                 WHERE elementId(u) = $userId AND elementId(b) = $blogId
-                CREATE (c:Comment {text:$commentText , createdAt:dateTime()})
+                CREATE (c:Comment {text:$commentText , createdAt:datetime()})
                 CREATE (u)-[:WROTE]->(c)
                 CREATE (c)-[:ON]->(b)
                 RETURN c
@@ -658,8 +658,8 @@ export const commentBlog = async (req: Request, res: Response): Promise<any> => 
 
                 console.log("comment Array",commentResult)
 
-                commentResult.records.map((cmt) => {
-                    comments.push({"text":cmt.get('c').properties.text,"createdAt":cmt.get('c').properties.createdAt.toStandardDate().toISOString()});
+                commentResult?.records.map((cmt) => {
+                    comments?.push({"text":cmt.get('c')?.properties?.text,"createdAt":cmt.get('c')?.properties.createdAt?.toStandardDate()?.toISOString()});
                     return comments;
                 })
 
@@ -711,10 +711,12 @@ export const deleteComment = async (req:Request,res:Response) : Promise<any> => 
 
             const deleted = result.summary.counters.updates().relationshipsDeleted;
 
+            const response = result.summary.counters.updates();
+
             if(deleted > 0){
                 return res.status(200).json({msg:"comment deleted successfully.."})
             }else{
-                return res.status(409).json({msg:"comment could not be deleted for some reason..."})
+                return res.status(409).json({msg:"comment could not be deleted for some reason...", response})
             }
 
         }catch(err){
@@ -727,14 +729,74 @@ export const deleteComment = async (req:Request,res:Response) : Promise<any> => 
     }
 }
 
-
 export const replyToComment = async(req:Request,res:Response):Promise<any> => {
+    
+    const session = driver.session({database:"blog-app"}); 
+
     try{
+
+        const parsedPayload = replyCommentInput.safeParse(req.body);
+
+        if(!parsedPayload.success){
+            return res.status(400).json({msg:"invalid input..."})
+        }
+
+        const userId = req.user && req.user.userId ; 
+        
+        const {blogId,parentCommentId,text} = parsedPayload.data;
+
+        try{
+            const commentQuery = 
+            `
+                MATCH (u:User) , (b:Blog) , (parent:Comment)
+                WHERE elementId(u)=$userId AND elementId(b)=$blogId AND elementId(parent) = $parentCommentId
+                CREATE (reply:Comment {text:$text,parentCommentId:$parentCommentId,createdAt:datetime()})
+                CREATE (u)-[:WROTE]->(reply)
+                CREATE (reply)-[:ON]->(b)
+                CREATE (reply)-[:REPLIED_TO]->(parent)
+                RETURN reply , parent ,  b , u
+            `
+
+            const result = await session.run(commentQuery,{userId,blogId,parentCommentId,text});
+
+            const nodesCreated = result?.summary?.counters?.updates()?.nodesCreated;
+
+            const relationshipsCreated = result?.summary?.counters?.updates()?.relationshipsCreated;
+
+            const labelsAdded = result?.summary?.counters?.updates()?.labelsAdded;
+
+            const propertiesSet = result?.summary?.counters?.updates()?.propertiesSet;
+
+            const user = result?.records[0]?.get('u')?.properties;
+
+            const blog = result?.records[0]?.get('b')?.properties;
+
+            if(nodesCreated > 0 && relationshipsCreated === 3 && labelsAdded > 0 && propertiesSet === 3){
+                
+                const reply = {"id" : result?.records[0]?.get('reply')?.elementId,"parentCommentId":result?.records[0]?.get('reply')?.properties?.parentCommentId,"replyText":result?.records[0]?.get('reply')?.properties?.text,"createdAt":result?.records[0]?.get('reply')?.properties?.createdAt?.toStandardDate()?.toISOString(),"user":user,"blog":blog}
+
+                return res.status(200).json({message:"reply created successfully..",reply})
+            }
+
+            
+
+
+        }catch(err){
+            console.error(err);
+            return {success:false,error:err}
+        }
 
     }catch(err){
         console.error(err);
-        res.status(500).json({msg:"internal server error...."})
+        return res.status(500).json({msg:"internal server error...."})
+    }finally{
+        session.close();
     }
 }
 
+// retrieve all comments of all depth  
+// export const getAllComments;
+
+// toggle between follow and unfollow , if you are following somebody and if you send the follow request again that toggles it to unfollow
+// export const follow;
 

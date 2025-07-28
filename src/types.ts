@@ -51,9 +51,13 @@ export const commentBlogInput = zod.object({
   commentText : zod.string({message:"Required"}),
 })
 
-/* const deleteCommentInput = zod.object({
-  blogId : zod.string({message:"Required"}),
-  commentId : zod.string({message:"Required"})
-})  */
 
 export const deleteCommentInput = zod.string().nonempty("Required");
+
+// you need to pass the id of the comment being replied to  
+export const replyCommentInput = zod.object({
+  blogId : zod.string().nonempty("Required"),
+  parentCommentId : zod.string().nonempty("Required"),
+  text : zod.string().nonempty("Required")
+})
+
