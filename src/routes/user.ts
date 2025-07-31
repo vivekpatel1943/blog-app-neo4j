@@ -1,5 +1,5 @@
 import express,{Router,Request,Response} from 'express';
-import { signup,getAllUsers,signin,addBlog,profile, updateBlog, deleteBlog, getAllBlogs, likeBlog, bookmarkBlog, commentBlog, deleteComment, replyToComment} from '../controllers/user';
+import { signup,getAllUsers,signin,addBlog,profile, updateBlog, deleteBlog, getAllBlogs, likeBlog, bookmarkBlog, commentBlog, deleteComment, replyToComment, getAllComments,follow} from '../controllers/user';
 import userAuthMiddleware from '../middlewares/user';
 import cookieParser from 'cookie-parser';
 
@@ -24,5 +24,6 @@ router.post('/bookmark-blog/:id',userAuthMiddleware,bookmarkBlog)
 router.post('/comment-blog',userAuthMiddleware,commentBlog)
 router.delete('/delete-comment/:commentId',userAuthMiddleware,deleteComment);
 router.post('/replyToComment',userAuthMiddleware,replyToComment)
-
+router.post('/getAllComments',userAuthMiddleware,getAllComments)
+router.post('/follow',userAuthMiddleware,follow);
 export default router;

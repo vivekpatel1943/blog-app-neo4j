@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import driver from '../neo4j';
-import { signupInput, signinInput, blogPostInput, updateBlogIdInput, updateBlogPayloadInput, deleteBlogInput, likeBlogInput, bookmarkBlogInput , commentBlogInput , deleteCommentInput, replyCommentInput} from '../types';
+import { signupInput, signinInput, blogPostInput, updateBlogIdInput, updateBlogPayloadInput, deleteBlogInput, likeBlogInput, bookmarkBlogInput , commentBlogInput , deleteCommentInput, replyCommentInput, retrieveCommentsInput,followUserInput} from '../types';
 import bcrypt from 'bcryptjs';
 import zod from 'zod';
 import jwt, { SignOptions } from 'jsonwebtoken';
@@ -778,9 +778,6 @@ export const replyToComment = async(req:Request,res:Response):Promise<any> => {
                 return res.status(200).json({message:"reply created successfully..",reply})
             }
 
-            
-
-
         }catch(err){
             console.error(err);
             return {success:false,error:err}
@@ -795,8 +792,164 @@ export const replyToComment = async(req:Request,res:Response):Promise<any> => {
 }
 
 // retrieve all comments of all depth  
-// export const getAllComments;
+// we want all the comments on a blog, 
+export const getAllComments = async (req:Request,res:Response):Promise<any> => {
+    
+    const session = driver.session({database:'blog-app'});
+
+    try{
+        const parsedPayload = retrieveCommentsInput.safeParse(req.body);
+        
+        if(!parsedPayload.success){
+            return res.status(400).json({msg:"invalid inuput..."})
+        }
+
+        const {blogId} = parsedPayload.data;
+
+        console.log("blogId",blogId)
+
+        try{
+            const retrieveCommentsQuery = 
+            `
+                MATCH (b:Blog)<-[:ON]-(root:Comment)<-[:WROTE]-(u:User)
+                WHERE elementId(b)=$blogId AND NOT (root)-[:REPLIED_TO]->(:Comment) 
+                OPTIONAL MATCH path = (root)<-[:REPLIED_TO*0..]-(reply)<-[:WROTE]-(user)
+                WITH reply , user , length(path) AS depth, 
+                    CASE WHEN reply = root THEN NULL ELSE nodes(path)[1] END AS parent
+                RETURN  reply, parent , user , depth
+                ORDER BY depth ASC , reply.createdAt ASC 
+            `
+
+            const result = await session.run(retrieveCommentsQuery,{blogId})
+
+            // map returns an array
+            const flatComments = result.records.map(record => {
+                const replyNode = record.get('reply');
+                const userNode = record.get('user');
+                const parentNode = record.get('parent');
+                const depth = record.get('depth');
+
+               /*  console.log("replyNode",replyNode.elementId);
+                console.log("parentNode",parentNode.elementId) */
+
+                return {
+
+                    "id":replyNode.elementId,
+                    "text":replyNode.properties.text,
+                    "createdAt":replyNode.properties.createdAt.toStandardDate().toISOString(),
+                    "author":{
+                        "username":userNode.properties.username
+                    },
+                    "parentCommentId":parentNode ? parentNode.elementId : null,
+                    "blogId":blogId,
+                    "depth":depth.toNumber(),
+                    "replies":[] as any[] //placeholder for nesting, "as any []" is just another of assigning types , here in this case it would mean that replies array can hold any type of data as elements 
+                }
+            })
+
+            // comment tree
+            const commentMap = new Map<string,any>();
+            const rootComments:any[] = [];
+            
+            for(const comment of flatComments){
+                commentMap.set(comment.id,comment)
+            }
+
+            console.log("commentMap",commentMap);
+
+            for (const comment of flatComments){
+
+                if(comment.parentCommentId){
+                    
+                    const parent = commentMap.get(comment.parentCommentId)
+
+                    console.log("parent",parent);
+
+                    if(parent.parentCommentId !== comment.id){
+                        parent.replies.push(comment);
+                    }
+                }else{
+                    rootComments.push(comment);
+                }
+            }
+
+            /* console.log("commentMap",commentMap);
+            console.log("rootComments",rootComments) */
+
+            console.log("commentMap",commentMap);
+
+            //  note : a Map cannot be converted to json as it is an object with internal structure not a plain serializable object , so basically you can't send it directly to the frontend as it will be converted to an empty object {} 
+
+            const serializedMap = Object.fromEntries(commentMap)
+
+            return res.status(200).json({msg:"comments retrieved successfully","comments" : serializedMap, "rootComments":rootComments});
+        }catch(err){
+            console.error(err);
+            return {success:false,error:err}
+        }
+    }catch(err){
+        console.error(err);
+        return res.status(500).json({msg:"internal server error..."})
+    }finally{
+        // close the session
+        session.close();
+    }
+};
 
 // toggle between follow and unfollow , if you are following somebody and if you send the follow request again that toggles it to unfollow
-// export const follow;
+export const follow = async (req:Request,res:Response):Promise<any> => {
+    
+    const session = driver.session({database:'blog-app'});
 
+    try{
+
+        const parsedPayload = followUserInput.safeParse(req.body);
+
+        if(!parsedPayload.success){
+            return res.status(400).json({message:"invalid input..."});
+        }
+
+        const {toFollowId} = parsedPayload.data;
+
+        const userId = req.user && req.user.userId;
+
+        try{    
+
+          /*   const followQuery = 
+            `
+                MATCH (toFollow:User) , (u:User)
+                WHERE elementId(toFollow)=$toFollowId AND elementId(u)=$userId
+                CREATE (toFollow)<-[:FOLLOWING]-(u) 
+            `
+            const result = await session.run(followQuery,{toFollowId,userId});
+
+            const relationshipsCreated = result?.summary?.counters?.updates()?.relationshipsCreated; */
+
+            const tofollowUser = await session.run(
+            `
+                MATCH (toFollow:User)
+                WHERE elementId(toFollow) = $toFollowId
+                RETURN toFollow    
+            `,{toFollowId})
+
+
+            console.log("toFollowUser",tofollowUser)
+           /*  if(relationshipsCreated > 0){
+                return res.status(200).json({msg:"you are following "})
+            } */
+            
+            return res.status(200).json({msg:"toFollowUser",tofollowUser});
+        }catch(err){
+            console.error(err);
+            return {success:false,error:err}
+        }
+
+    }catch(err){
+        console.error(err);
+        return res.status(500).json({msg:"internal server error"})
+    }finally{
+        session.close();
+    }
+};
+
+// and then try to build a recommendation system 

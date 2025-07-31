@@ -61,3 +61,10 @@ export const replyCommentInput = zod.object({
   text : zod.string().nonempty("Required")
 })
 
+export const retrieveCommentsInput = zod.object({
+  blogId : zod.string().nonempty("Required")
+})
+
+export const followUserInput = zod.object({
+  toFollowId : zod.string().nonempty("Required")
+})
