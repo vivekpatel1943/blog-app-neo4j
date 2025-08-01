@@ -485,7 +485,7 @@ export const likeBlog = async (req: Request, res: Response): Promise<any> => {
 
     } catch (err) {
         console.error(err);
-        res.status(500).json({ msg: "internal server error..." })
+        return res.status(500).json({ msg: "internal server error..." })
     } finally {
         session.close();
     }
@@ -915,30 +915,64 @@ export const follow = async (req:Request,res:Response):Promise<any> => {
 
         try{    
 
-          /*   const followQuery = 
+            const isFollowedQuery = 
+            `
+                MATCH (u:User)-[f:FOLLOWING]->(toFollow:User)
+                WHERE elementId(u) = $userId AND elementId(toFollow)=$toFollowId
+                RETURN COUNT(f) > 0 AS alreadyFollowed 
+            `
+            const isFollowedResult = await session.run(isFollowedQuery,{userId,toFollowId});
+
+            const isFollowed = isFollowedResult.records[0].get('alreadyFollowed');
+
+
+            console.log("isFollowed",isFollowed);
+
+            const followQuery = 
             `
                 MATCH (toFollow:User) , (u:User)
                 WHERE elementId(toFollow)=$toFollowId AND elementId(u)=$userId
                 CREATE (toFollow)<-[:FOLLOWING]-(u) 
             `
-            const result = await session.run(followQuery,{toFollowId,userId});
 
-            const relationshipsCreated = result?.summary?.counters?.updates()?.relationshipsCreated; */
-
-            const tofollowUser = await session.run(
+            const unfollowQuery = 
             `
+                MATCH (unfollow:User)<-[f:FOLLOWING]-(u:User)
+                WHERE elementId(unfollow)=$toFollowId AND elementId(u)=$userId
+                DELETE f
+            `  
+
+            const toFollowUserResult = await session.run( `
                 MATCH (toFollow:User)
                 WHERE elementId(toFollow) = $toFollowId
-                RETURN toFollow    
-            `,{toFollowId})
+                RETURN toFollow
+            `, {toFollowId})
+           
+           const toFollowUser = toFollowUserResult.records[0].get('toFollow').properties;
 
+            // const relationshipsCreated = followResult?.summary?.counters?.updates()?.relationshipsCreated;
 
-            console.log("toFollowUser",tofollowUser)
-           /*  if(relationshipsCreated > 0){
-                return res.status(200).json({msg:"you are following "})
-            } */
+            const followedUsername = toFollowUser.username;
             
-            return res.status(200).json({msg:"toFollowUser",tofollowUser});
+            if(isFollowed){
+               const unFollowResult = await session.run(unfollowQuery,{toFollowId,userId});
+               const relationshipDeleted = unFollowResult?.summary?.counters?.updates()?.relationshipsDeleted;
+               
+               if(relationshipDeleted > 0){
+                return res.status(200).json({msg:"you are not following",followedUsername,toFollowId})
+               }
+            }else{
+                const followResult = await session.run(followQuery,{toFollowId,userId})
+                const relationshipCreated = followResult?.summary?.counters?.updates()?.relationshipsCreated;
+
+                if(relationshipCreated){
+                    return res.status(200).json({msg:"you are following",followedUsername,toFollowId})
+                }
+            }
+
+       
+            console.log("isFollowedResult",isFollowedResult);
+            return res.status(200).json({msg:"isAlreadyFollowed",isFollowedResult});
         }catch(err){
             console.error(err);
             return {success:false,error:err}
@@ -953,3 +987,19 @@ export const follow = async (req:Request,res:Response):Promise<any> => {
 };
 
 // and then try to build a recommendation system 
+// build a recommendation system based on whom they follow , the blog posts they have liked or commented to ,
+//with the highest priority given to who they follow , and then to the posts they have liked and then the posts they have commented upon,
+//the above parameters will decide what you populate the timeline of a user with, 
+
+export const populateTimeline =  async (req:Request,res:Response):Promise<any> => {
+    const session = driver.session({database:"blog-app"});
+
+    try{
+
+        
+
+    }catch(err){
+        console.error(err);
+        return res.status(500).json({msg:"internal server error.."})
+    }
+}
