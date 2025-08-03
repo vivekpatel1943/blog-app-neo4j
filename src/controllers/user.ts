@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import driver from '../neo4j';
-import { signupInput, signinInput, blogPostInput, updateBlogIdInput, updateBlogPayloadInput, deleteBlogInput, likeBlogInput, bookmarkBlogInput , commentBlogInput , deleteCommentInput, replyCommentInput, retrieveCommentsInput,followUserInput} from '../types';
+import { signupInput, signinInput, blogPostInput, updateBlogIdInput, updateBlogPayloadInput, deleteBlogInput, likeBlogInput, bookmarkBlogInput, commentBlogInput, deleteCommentInput, replyCommentInput, retrieveCommentsInput, followUserInput } from '../types';
 import bcrypt from 'bcryptjs';
 import zod from 'zod';
 import jwt, { SignOptions } from 'jsonwebtoken';
@@ -240,7 +240,7 @@ export const addBlog = async (req: Request, res: Response): Promise<any> => {
         //  'CREATE (u:User {username:$username,email:$email,password:$hashedPassword}) RETURN u',
         const subtitle = parsedPayload.data.subtitle ?? null;
 
-        const blog = await session.run('CREATE (b:Blog  {title:$title,subtitle:$subtitle,description:$description}) RETURN b', { title, subtitle, description })
+        const blog = await session.run('CREATE (b:Blog  {title:$title,subtitle:$subtitle,description:$description,createdAt:datetime()}) RETURN b', { title, subtitle, description })
 
         // console.log("blog",blog.records[0].get('b'));
 
@@ -285,6 +285,33 @@ export const addBlog = async (req: Request, res: Response): Promise<any> => {
     }
 }
 
+export const addDate = async (req:Request,res:Response):Promise<any> => {
+
+    const session = driver.session({database : 'blog-app'});
+
+    try{
+        const addDateQuery = 
+        `
+            MATCH (b:Blog)
+            WHERE  (b.createdAt) IS NULL 
+            SET b.createdAt = datetime()
+            RETURN COUNT(b) AS updatedCount
+        `
+
+        const addDateResult = await session.run(addDateQuery);
+
+        // console.log("addDateResult",addDateResult);
+
+        const count = addDateResult?.records[0]?.get('updatedCount')?.toNumber();
+
+        return res.status(500).json({msg:`updated ${count}, blog nodes updated with timestamps..`});
+
+    }catch(err){
+        console.error(err);
+        res.status(500).json({msg:"internal server error..."});
+    }
+}
+
 export const updateBlog = async (req: Request, res: Response): Promise<any> => {
 
     const session = driver.session({ database: 'blog-app' });
@@ -322,7 +349,9 @@ export const updateBlog = async (req: Request, res: Response): Promise<any> => {
                 WHERE elementId(b) = $blogId
                 SET b.title = $title,
                     b.subtitle = $subtitle,
-                    b.description = $description 
+                    b.description = $description,
+                    b.updatedAt = datetime(), //latest update
+                    b.updateHostory = coalesce(b.updateHistory,[]) + datetime() //append to history
                 RETURN b
             `, { blogId, title: title ?? existingBlog.title, subtitle: subtitle ?? existingBlog.subtitle, description: description ?? existingBlog.description });
 
@@ -446,7 +475,7 @@ export const likeBlog = async (req: Request, res: Response): Promise<any> => {
                 `
                 const result = await session.run(createRelQuery, { userId, blogId });
 
-                const created = result.summary.counters.updates().relationshipsCreated;
+                const created = result?.summary?.counters?.updates()?.relationshipsCreated;
 
                 if (created > 0) {
                     likeCount = likeCount + 1;
@@ -465,7 +494,7 @@ export const likeBlog = async (req: Request, res: Response): Promise<any> => {
 
                 console.log("result", result);
 
-                const deleted = result.summary.counters.updates().relationshipsDeleted;
+                const deleted = result?.summary?.counters?.updates()?.relationshipsDeleted;
 
                 console.log("deleted", deleted);
 
@@ -591,18 +620,18 @@ export const commentBlog = async (req: Request, res: Response): Promise<any> => 
 
         const parsedPayload = commentBlogInput.safeParse(req.body);
 
-        if(!parsedPayload.success){
-            return res.status(400).json({msg:"invalid input.."})
+        if (!parsedPayload.success) {
+            return res.status(400).json({ msg: "invalid input.." })
         }
 
         const userId = req.user && req.user.userId;
 
-        const {blogId,commentText} = parsedPayload.data;
+        const { blogId, commentText } = parsedPayload.data;
 
-        try{
+        try {
 
-            const createCommentQuery = 
-            `
+            const createCommentQuery =
+                `
                 MATCH (u:User) , (b:Blog)
                 WHERE elementId(u) = $userId AND elementId(b) = $blogId
                 CREATE (c:Comment {text:$commentText , createdAt:datetime()})
@@ -611,38 +640,38 @@ export const commentBlog = async (req: Request, res: Response): Promise<any> => 
                 RETURN c
             `
 
-            const result = await session.run(createCommentQuery,{userId,blogId,commentText});
+            const result = await session.run(createCommentQuery, { userId, blogId, commentText });
 
-            console.log("result",result)
+            console.log("result", result)
 
             const nodesCreated = result.summary.counters.updates().nodesCreated;
 
-            console.log("nodes created",nodesCreated)
-            
+            console.log("nodes created", nodesCreated)
+
             const relationshipsCreated = result.summary.counters.updates().relationshipsCreated;
 
-            console.log("relationships created",relationshipsCreated);
+            console.log("relationships created", relationshipsCreated);
 
-            if(nodesCreated > 0 && relationshipsCreated > 0){
+            if (nodesCreated > 0 && relationshipsCreated > 0) {
                 const userResult = await session.run(
                     `
                         MATCH (u:User)
                         WHERE elementId(u) = $userId
                         RETURN u
-                    `,{userId}
+                    `, { userId }
                 )
 
-                const user = {"user":userResult.records[0].get('u').properties,"userId":userId};
+                const user = { "user": userResult.records[0].get('u').properties, "userId": userId };
 
                 const blogResult = await session.run(
                     `
                         MATCH (b:Blog)
                         WHERE elementId(b) = $blogId
                         RETURN b
-                    `,{blogId}
+                    `, { blogId }
                 )
 
-                const blog = {"blog" : blogResult.records[0].get('b').properties,"blogId":blogId};
+                const blog = { "blog": blogResult.records[0].get('b').properties, "blogId": blogId };
 
 
                 const commentResult = await session.run(
@@ -651,26 +680,26 @@ export const commentBlog = async (req: Request, res: Response): Promise<any> => 
                         WHERE elementId(u) =  $userId AND elementId(b)=$blogId
                         MATCH (u)-[:WROTE]->(c)-[:ON]->(b)
                         RETURN c
-                    `,{userId,blogId}
+                    `, { userId, blogId }
                 )
 
-                let comments : Array<Object> = []
+                let comments: Array<Object> = []
 
-                console.log("comment Array",commentResult)
+                console.log("comment Array", commentResult)
 
                 commentResult?.records.map((cmt) => {
-                    comments?.push({"text":cmt.get('c')?.properties?.text,"createdAt":cmt.get('c')?.properties.createdAt?.toStandardDate()?.toISOString()});
+                    comments?.push({ "text": cmt.get('c')?.properties?.text, "createdAt": cmt.get('c')?.properties.createdAt?.toStandardDate()?.toISOString() });
                     return comments;
                 })
 
-                return res.status(200).json({msg:"comment added successfully...", user,blog,comments});
-            }else{
-                return res.status(409).json({msg:"comment could not be added successfully..."})
+                return res.status(200).json({ msg: "comment added successfully...", user, blog, comments });
+            } else {
+                return res.status(409).json({ msg: "comment could not be added successfully..." })
             }
 
-        }catch(err){
+        } catch (err) {
             console.error(err);
-            return {success:false,message:err};
+            return { success: false, message: err };
         }
 
         // const createComment = await session.run()
@@ -682,15 +711,15 @@ export const commentBlog = async (req: Request, res: Response): Promise<any> => 
     }
 }
 
-export const deleteComment = async (req:Request,res:Response) : Promise<any> => {
-    
-    const session = driver.session({database:'blog-app'});
+export const deleteComment = async (req: Request, res: Response): Promise<any> => {
 
-    try{
+    const session = driver.session({ database: 'blog-app' });
+
+    try {
         const parsedPayload = deleteCommentInput.safeParse(req.params.commentId);
 
-        if(!parsedPayload.success){
-            return res.status(400).json({msg:"invalid input.."})
+        if (!parsedPayload.success) {
+            return res.status(400).json({ msg: "invalid input.." })
         }
 
         const commentId = parsedPayload.data;
@@ -698,56 +727,56 @@ export const deleteComment = async (req:Request,res:Response) : Promise<any> => 
         // const blogId = parsedPayload.data;
 
         // const userId = req.user && req.user.userId;
-        try{
+        try {
 
-            const deleteCommentQuery = 
-            `
+            const deleteCommentQuery =
+                `
                 MATCH (c:Comment)
                 WHERE elementId(c) = $commentId
                 DETACH DELETE c
             `
 
-            const result = await session.run(deleteCommentQuery,{commentId});
+            const result = await session.run(deleteCommentQuery, { commentId });
 
             const deleted = result.summary.counters.updates().relationshipsDeleted;
 
             const response = result.summary.counters.updates();
 
-            if(deleted > 0){
-                return res.status(200).json({msg:"comment deleted successfully.."})
-            }else{
-                return res.status(409).json({msg:"comment could not be deleted for some reason...", response})
+            if (deleted > 0) {
+                return res.status(200).json({ msg: "comment deleted successfully.." })
+            } else {
+                return res.status(409).json({ msg: "comment could not be deleted for some reason...", response })
             }
 
-        }catch(err){
+        } catch (err) {
             console.error(err);
-            return {success:false,message : err}
+            return { success: false, message: err }
         }
-    }catch(err){
+    } catch (err) {
         console.log(err);
-        res.status(500).json({msg:"internal server error..."})
+        res.status(500).json({ msg: "internal server error..." })
     }
 }
 
-export const replyToComment = async(req:Request,res:Response):Promise<any> => {
-    
-    const session = driver.session({database:"blog-app"}); 
+export const replyToComment = async (req: Request, res: Response): Promise<any> => {
 
-    try{
+    const session = driver.session({ database: "blog-app" });
+
+    try {
 
         const parsedPayload = replyCommentInput.safeParse(req.body);
 
-        if(!parsedPayload.success){
-            return res.status(400).json({msg:"invalid input..."})
+        if (!parsedPayload.success) {
+            return res.status(400).json({ msg: "invalid input..." })
         }
 
-        const userId = req.user && req.user.userId ; 
-        
-        const {blogId,parentCommentId,text} = parsedPayload.data;
+        const userId = req.user && req.user.userId;
 
-        try{
-            const commentQuery = 
-            `
+        const { blogId, parentCommentId, text } = parsedPayload.data;
+
+        try {
+            const commentQuery =
+                `
                 MATCH (u:User) , (b:Blog) , (parent:Comment)
                 WHERE elementId(u)=$userId AND elementId(b)=$blogId AND elementId(parent) = $parentCommentId
                 CREATE (reply:Comment {text:$text,parentCommentId:$parentCommentId,createdAt:datetime()})
@@ -757,7 +786,7 @@ export const replyToComment = async(req:Request,res:Response):Promise<any> => {
                 RETURN reply , parent ,  b , u
             `
 
-            const result = await session.run(commentQuery,{userId,blogId,parentCommentId,text});
+            const result = await session.run(commentQuery, { userId, blogId, parentCommentId, text });
 
             const nodesCreated = result?.summary?.counters?.updates()?.nodesCreated;
 
@@ -771,46 +800,46 @@ export const replyToComment = async(req:Request,res:Response):Promise<any> => {
 
             const blog = result?.records[0]?.get('b')?.properties;
 
-            if(nodesCreated > 0 && relationshipsCreated === 3 && labelsAdded > 0 && propertiesSet === 3){
-                
-                const reply = {"id" : result?.records[0]?.get('reply')?.elementId,"parentCommentId":result?.records[0]?.get('reply')?.properties?.parentCommentId,"replyText":result?.records[0]?.get('reply')?.properties?.text,"createdAt":result?.records[0]?.get('reply')?.properties?.createdAt?.toStandardDate()?.toISOString(),"user":user,"blog":blog}
+            if (nodesCreated > 0 && relationshipsCreated === 3 && labelsAdded > 0 && propertiesSet === 3) {
 
-                return res.status(200).json({message:"reply created successfully..",reply})
+                const reply = { "id": result?.records[0]?.get('reply')?.elementId, "parentCommentId": result?.records[0]?.get('reply')?.properties?.parentCommentId, "replyText": result?.records[0]?.get('reply')?.properties?.text, "createdAt": result?.records[0]?.get('reply')?.properties?.createdAt?.toStandardDate()?.toISOString(), "user": user, "blog": blog }
+
+                return res.status(200).json({ message: "reply created successfully..", reply })
             }
 
-        }catch(err){
+        } catch (err) {
             console.error(err);
-            return {success:false,error:err}
+            return { success: false, error: err }
         }
 
-    }catch(err){
+    } catch (err) {
         console.error(err);
-        return res.status(500).json({msg:"internal server error...."})
-    }finally{
+        return res.status(500).json({ msg: "internal server error...." })
+    } finally {
         session.close();
     }
 }
 
 // retrieve all comments of all depth  
 // we want all the comments on a blog, 
-export const getAllComments = async (req:Request,res:Response):Promise<any> => {
-    
-    const session = driver.session({database:'blog-app'});
+export const getAllComments = async (req: Request, res: Response): Promise<any> => {
 
-    try{
+    const session = driver.session({ database: 'blog-app' });
+
+    try {
         const parsedPayload = retrieveCommentsInput.safeParse(req.body);
-        
-        if(!parsedPayload.success){
-            return res.status(400).json({msg:"invalid inuput..."})
+
+        if (!parsedPayload.success) {
+            return res.status(400).json({ msg: "invalid inuput..." })
         }
 
-        const {blogId} = parsedPayload.data;
+        const { blogId } = parsedPayload.data;
 
-        console.log("blogId",blogId)
+        console.log("blogId", blogId)
 
-        try{
-            const retrieveCommentsQuery = 
-            `
+        try {
+            const retrieveCommentsQuery =
+                `
                 MATCH (b:Blog)<-[:ON]-(root:Comment)<-[:WROTE]-(u:User)
                 WHERE elementId(b)=$blogId AND NOT (root)-[:REPLIED_TO]->(:Comment) 
                 OPTIONAL MATCH path = (root)<-[:REPLIED_TO*0..]-(reply)<-[:WROTE]-(user)
@@ -820,7 +849,7 @@ export const getAllComments = async (req:Request,res:Response):Promise<any> => {
                 ORDER BY depth ASC , reply.createdAt ASC 
             `
 
-            const result = await session.run(retrieveCommentsQuery,{blogId})
+            const result = await session.run(retrieveCommentsQuery, { blogId })
 
             // map returns an array
             const flatComments = result.records.map(record => {
@@ -829,46 +858,46 @@ export const getAllComments = async (req:Request,res:Response):Promise<any> => {
                 const parentNode = record.get('parent');
                 const depth = record.get('depth');
 
-               /*  console.log("replyNode",replyNode.elementId);
-                console.log("parentNode",parentNode.elementId) */
+                /*  console.log("replyNode",replyNode.elementId);
+                 console.log("parentNode",parentNode.elementId) */
 
                 return {
 
-                    "id":replyNode.elementId,
-                    "text":replyNode.properties.text,
-                    "createdAt":replyNode.properties.createdAt.toStandardDate().toISOString(),
-                    "author":{
-                        "username":userNode.properties.username
+                    "id": replyNode.elementId,
+                    "text": replyNode.properties.text,
+                    "createdAt": replyNode.properties.createdAt.toStandardDate().toISOString(),
+                    "author": {
+                        "username": userNode.properties.username
                     },
-                    "parentCommentId":parentNode ? parentNode.elementId : null,
-                    "blogId":blogId,
-                    "depth":depth.toNumber(),
-                    "replies":[] as any[] //placeholder for nesting, "as any []" is just another of assigning types , here in this case it would mean that replies array can hold any type of data as elements 
+                    "parentCommentId": parentNode ? parentNode.elementId : null,
+                    "blogId": blogId,
+                    "depth": depth.toNumber(),
+                    "replies": [] as any[] //placeholder for nesting, "as any []" is just another of assigning types , here in this case it would mean that replies array can hold any type of data as elements 
                 }
             })
 
             // comment tree
-            const commentMap = new Map<string,any>();
-            const rootComments:any[] = [];
-            
-            for(const comment of flatComments){
-                commentMap.set(comment.id,comment)
+            const commentMap = new Map<string, any>();
+            const rootComments: any[] = [];
+
+            for (const comment of flatComments) {
+                commentMap.set(comment.id, comment)
             }
 
-            console.log("commentMap",commentMap);
+            console.log("commentMap", commentMap);
 
-            for (const comment of flatComments){
+            for (const comment of flatComments) {
 
-                if(comment.parentCommentId){
-                    
+                if (comment.parentCommentId) {
+
                     const parent = commentMap.get(comment.parentCommentId)
 
-                    console.log("parent",parent);
+                    console.log("parent", parent);
 
-                    if(parent.parentCommentId !== comment.id){
+                    if (parent.parentCommentId !== comment.id) {
                         parent.replies.push(comment);
                     }
-                }else{
+                } else {
                     rootComments.push(comment);
                 }
             }
@@ -876,130 +905,169 @@ export const getAllComments = async (req:Request,res:Response):Promise<any> => {
             /* console.log("commentMap",commentMap);
             console.log("rootComments",rootComments) */
 
-            console.log("commentMap",commentMap);
+            console.log("commentMap", commentMap);
 
             //  note : a Map cannot be converted to json as it is an object with internal structure not a plain serializable object , so basically you can't send it directly to the frontend as it will be converted to an empty object {} 
 
             const serializedMap = Object.fromEntries(commentMap)
 
-            return res.status(200).json({msg:"comments retrieved successfully","comments" : serializedMap, "rootComments":rootComments});
-        }catch(err){
+            return res.status(200).json({ msg: "comments retrieved successfully", "comments": serializedMap, "rootComments": rootComments });
+        } catch (err) {
             console.error(err);
-            return {success:false,error:err}
+            return { success: false, error: err }
         }
-    }catch(err){
+    } catch (err) {
         console.error(err);
-        return res.status(500).json({msg:"internal server error..."})
-    }finally{
+        return res.status(500).json({ msg: "internal server error..." })
+    } finally {
         // close the session
         session.close();
     }
 };
 
 // toggle between follow and unfollow , if you are following somebody and if you send the follow request again that toggles it to unfollow
-export const follow = async (req:Request,res:Response):Promise<any> => {
-    
-    const session = driver.session({database:'blog-app'});
+export const follow = async (req: Request, res: Response): Promise<any> => {
 
-    try{
+    const session = driver.session({ database: 'blog-app' });
+
+    try {
 
         const parsedPayload = followUserInput.safeParse(req.body);
 
-        if(!parsedPayload.success){
-            return res.status(400).json({message:"invalid input..."});
+        if (!parsedPayload.success) {
+            return res.status(400).json({ message: "invalid input..." });
         }
 
-        const {toFollowId} = parsedPayload.data;
+        const { toFollowId } = parsedPayload.data;
 
         const userId = req.user && req.user.userId;
 
-        try{    
+        try {
 
-            const isFollowedQuery = 
-            `
+            const isFollowedQuery =
+                `
                 MATCH (u:User)-[f:FOLLOWING]->(toFollow:User)
                 WHERE elementId(u) = $userId AND elementId(toFollow)=$toFollowId
                 RETURN COUNT(f) > 0 AS alreadyFollowed 
             `
-            const isFollowedResult = await session.run(isFollowedQuery,{userId,toFollowId});
+            const isFollowedResult = await session.run(isFollowedQuery, { userId, toFollowId });
 
             const isFollowed = isFollowedResult.records[0].get('alreadyFollowed');
 
 
-            console.log("isFollowed",isFollowed);
+            console.log("isFollowed", isFollowed);
 
-            const followQuery = 
-            `
+            const followQuery =
+                `
                 MATCH (toFollow:User) , (u:User)
                 WHERE elementId(toFollow)=$toFollowId AND elementId(u)=$userId
                 CREATE (toFollow)<-[:FOLLOWING]-(u) 
             `
 
-            const unfollowQuery = 
-            `
+            const unfollowQuery =
+                `
                 MATCH (unfollow:User)<-[f:FOLLOWING]-(u:User)
                 WHERE elementId(unfollow)=$toFollowId AND elementId(u)=$userId
                 DELETE f
-            `  
+            `
 
-            const toFollowUserResult = await session.run( `
+            const toFollowUserResult = await session.run(`
                 MATCH (toFollow:User)
                 WHERE elementId(toFollow) = $toFollowId
                 RETURN toFollow
-            `, {toFollowId})
-           
-           const toFollowUser = toFollowUserResult.records[0].get('toFollow').properties;
+            `, { toFollowId })
+
+            const toFollowUser = toFollowUserResult.records[0].get('toFollow').properties;
 
             // const relationshipsCreated = followResult?.summary?.counters?.updates()?.relationshipsCreated;
 
             const followedUsername = toFollowUser.username;
-            
-            if(isFollowed){
-               const unFollowResult = await session.run(unfollowQuery,{toFollowId,userId});
-               const relationshipDeleted = unFollowResult?.summary?.counters?.updates()?.relationshipsDeleted;
-               
-               if(relationshipDeleted > 0){
-                return res.status(200).json({msg:"you are not following",followedUsername,toFollowId})
-               }
-            }else{
-                const followResult = await session.run(followQuery,{toFollowId,userId})
+
+            if (isFollowed) {
+                const unFollowResult = await session.run(unfollowQuery, { toFollowId, userId });
+                const relationshipDeleted = unFollowResult?.summary?.counters?.updates()?.relationshipsDeleted;
+
+                if (relationshipDeleted > 0) {
+                    return res.status(200).json({ msg: "you are not following", followedUsername, toFollowId })
+                }
+            } else {
+                const followResult = await session.run(followQuery, { toFollowId, userId })
                 const relationshipCreated = followResult?.summary?.counters?.updates()?.relationshipsCreated;
 
-                if(relationshipCreated){
-                    return res.status(200).json({msg:"you are following",followedUsername,toFollowId})
+                if (relationshipCreated) {
+                    return res.status(200).json({ msg: "you are following", followedUsername, toFollowId })
                 }
             }
 
-       
-            console.log("isFollowedResult",isFollowedResult);
-            return res.status(200).json({msg:"isAlreadyFollowed",isFollowedResult});
-        }catch(err){
+
+            console.log("isFollowedResult", isFollowedResult);
+            return res.status(200).json({ msg: "isAlreadyFollowed", isFollowedResult });
+        } catch (err) {
             console.error(err);
-            return {success:false,error:err}
+            return { success: false, error: err }
         }
 
-    }catch(err){
+    } catch (err) {
         console.error(err);
-        return res.status(500).json({msg:"internal server error"})
-    }finally{
+        return res.status(500).json({ msg: "internal server error" })
+    } finally {
         session.close();
     }
 };
 
-// and then try to build a recommendation system 
-// build a recommendation system based on whom they follow , the blog posts they have liked or commented to ,
-//with the highest priority given to who they follow , and then to the posts they have liked and then the posts they have commented upon,
-//the above parameters will decide what you populate the timeline of a user with, 
 
-export const populateTimeline =  async (req:Request,res:Response):Promise<any> => {
-    const session = driver.session({database:"blog-app"});
 
-    try{
+export const populateTimeline = async (req: Request, res: Response): Promise<any> => {
+    const session = driver.session({ database: "blog-app" });
 
-        
+    try {
 
-    }catch(err){
+        const userId = req.user && req.user.userId
+
+        try {
+            // retrieve all the latest posts by the user you follow or you have liked/bookmarked/commented upon their posts in the last one month,
+
+            const retrievePostsQuery =
+                `
+                    //=== PHASE 1 ====
+                    MATCH (u:User)
+                    WHERE elementId(u) = $userId
+
+                    //Posts by followed users
+                    OPTIONAL MATCH (u)-[:FOLLOWING]->(followed:User)-[:posted]->(fp:Blog)   
+                    
+                    // Posts the user interacted with 
+                    OPTIONAL MATCH (u)-[:Liked|WROTE|bookmarked]->(ip:Blog)
+
+                    WITH COLLECT(DISTINCT fp) + COLLECT(DISTINCT ip) AS recentPostsUnsorted
+                    UNWIND recentPostsUnsorted AS post
+                    WITH DISTINCT post 
+                    RETURN post
+                    ORDER BY post.createdAt DESC 
+                    LIMIT 20
+
+                `
+
+            //  this gives you all the users who you follow , 
+            const result = await session.run(retrievePostsQuery,{userId});
+
+            console.log(result);
+
+            const posts = result.records.map((post) => {
+                post.get('post').properties.createdAt = post.get('post').properties.createdAt.toStandardDate().toISOString()
+                return post.get('post').properties;
+            })
+
+            return res.status(200).json({ msg: "posts", posts});
+
+        } catch (err) {
+            console.error(err);
+            return { success: false, error: err };
+        }
+    } catch (err) {
         console.error(err);
-        return res.status(500).json({msg:"internal server error.."})
+        return res.status(500).json({ msg: "internal server error.." })
+    }finally{
+        session.close();
     }
 }
