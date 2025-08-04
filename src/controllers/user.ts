@@ -240,7 +240,7 @@ export const addBlog = async (req: Request, res: Response): Promise<any> => {
         //  'CREATE (u:User {username:$username,email:$email,password:$hashedPassword}) RETURN u',
         const subtitle = parsedPayload.data.subtitle ?? null;
 
-        const blog = await session.run('CREATE (b:Blog  {title:$title,subtitle:$subtitle,description:$description,createdAt:datetime()}) RETURN b', { title, subtitle, description })
+        const blog = await session.run('CREATE (b:Blog  {title:$title,subtitle:$subtitle,description:$description,createdAt:datetime(),likes:0,bookmarks:0,comments:0}) RETURN b', { title, subtitle, description })
 
         // console.log("blog",blog.records[0].get('b'));
 
@@ -275,6 +275,41 @@ export const addBlog = async (req: Request, res: Response): Promise<any> => {
             { userId, blogId }
         );
 
+       /*  const likeCountQuery = 
+        `
+            MATCH (u:User)-[l:Liked]->(b:Blog {id:$blogId})
+            RETURN COUNT(l) AS likeCount
+        `
+
+        const likeResult = await session.run(likeCountQuery,{blogId})
+
+        const likes = likeResult.records[0].get('likeCount').toNumber()
+
+        const bookmarkCountQuery = 
+        `
+            AWAIT (u:User)-[b:bookmarked]->(b:Blog {id:$blogId})
+            RETURN COUNT(b) AS bookmarkCount
+        `
+
+        const bookmarkResult = await session.run(bookmarkCountQuery,{blogId})
+
+        const bookmarks = bookmarkResult.records[0].get('bookmarkCount').toNumber();
+
+        const commentCountQuery = 
+        `
+            AWAIT (u:User)-[w:WROTE]->(b:Blog {id:$blogId})
+            RETURN COUNT(w) AS commentCount
+        `
+
+        const commentResult = await session.run(commentCountQuery,{blogId});
+
+        const comments = commentResult.records[0].get('commentCount').toNumber()
+
+        const addIntQuery = 
+        `
+
+        ` */
+
         return res.status(200).json({ msg: "blog has been created.." })
 
     } catch (err) {
@@ -293,8 +328,11 @@ export const addDate = async (req:Request,res:Response):Promise<any> => {
         const addDateQuery = 
         `
             MATCH (b:Blog)
-            WHERE  (b.createdAt) IS NULL 
-            SET b.createdAt = datetime()
+            SET 
+                b.createdAt = coalesce(b.createdAt,datetime()),
+                b.likes = coalesce(b.likes , 0),
+                b.bookmarks = coalesce(b.bookmarks , 0),
+                b.comments = coalesce(b.comments , 0)
             RETURN COUNT(b) AS updatedCount
         `
 
@@ -472,6 +510,7 @@ export const likeBlog = async (req: Request, res: Response): Promise<any> => {
                     MATCH (u:User) , (b:Blog)
                     WHERE elementId(u) = $userId AND elementId(b) = $blogId
                     CREATE (u)-[l:Liked]->(b)
+                    SET b.likes = coalesce(b.likes,0) + 1 
                 `
                 const result = await session.run(createRelQuery, { userId, blogId });
 
@@ -489,6 +528,7 @@ export const likeBlog = async (req: Request, res: Response): Promise<any> => {
                     WHERE elementId(u) = $userId AND elementId(b) = $blogId
                     MATCH (u:User)-[l:Liked]->(b:Blog)
                     DELETE l
+                    SET b.likes = b.likes - 1
                 `
                 const result = await session.run(deleteRelQuery, { userId, blogId });
 
@@ -567,6 +607,7 @@ export const bookmarkBlog = async (req: Request, res: Response): Promise<any> =>
                     MATCH (u:User) , (b:Blog)
                     WHERE elementId(u) = $userId AND elementId(b) = $blogId
                     CREATE (u)-[bm:bookmarked]->(b)
+                    SET b.bookmarks = coalesce(b.bookmarks,0) + 1
                 `
                 const result = await session.run(createRelQuery, { userId, blogId });
 
@@ -582,6 +623,7 @@ export const bookmarkBlog = async (req: Request, res: Response): Promise<any> =>
                     WHERE elementId(u) = $userId AND elementId(b) = $blogId
                     MATCH (u:User)-[bm:bookmarked]->(b:Blog)
                     DELETE bm
+                    SET b.bookmarks = b.bookmarks - 1
                 `
                 const result = await session.run(deleteRelQuery, { userId, blogId });
 
@@ -637,6 +679,7 @@ export const commentBlog = async (req: Request, res: Response): Promise<any> => 
                 CREATE (c:Comment {text:$commentText , createdAt:datetime()})
                 CREATE (u)-[:WROTE]->(c)
                 CREATE (c)-[:ON]->(b)
+                SET b.comments = coalesce(b.comments,0) + 1
                 RETURN c
             `
 
@@ -734,6 +777,7 @@ export const deleteComment = async (req: Request, res: Response): Promise<any> =
                 MATCH (c:Comment)
                 WHERE elementId(c) = $commentId
                 DETACH DELETE c
+                SET b.comments = b.comments - 1
             `
 
             const result = await session.run(deleteCommentQuery, { commentId });
@@ -783,6 +827,7 @@ export const replyToComment = async (req: Request, res: Response): Promise<any> 
                 CREATE (u)-[:WROTE]->(reply)
                 CREATE (reply)-[:ON]->(b)
                 CREATE (reply)-[:REPLIED_TO]->(parent)
+                SET b.comments = b.comments + 1
                 RETURN reply , parent ,  b , u
             `
 
@@ -1015,8 +1060,6 @@ export const follow = async (req: Request, res: Response): Promise<any> => {
     }
 };
 
-
-
 export const populateTimeline = async (req: Request, res: Response): Promise<any> => {
     const session = driver.session({ database: "blog-app" });
 
@@ -1046,6 +1089,42 @@ export const populateTimeline = async (req: Request, res: Response): Promise<any
                     ORDER BY post.createdAt DESC 
                     LIMIT 20
 
+                    UNION 
+
+                    // === PHASE 2 ===
+                    MATCH (u:User)
+                    WHERE elementId(u) = $userId
+
+                    // posts by followed users
+                    OPTIONAL MATCH (u)-[:FOLLOWING]->(f:user)-[:posted]->(p1:Blog)
+                    WITH u , f, p1 , 5 as followScore
+
+                    // Likes 
+                    OPTIONAL MATCH (u)-[:Liked]->(p2:Blog)
+                    WITH u , f, p1, followScore , p2, 2 as likeScore
+
+                    //Comments
+                    OPTIONAL MATCH (u)-[:WROTE]->(p3:Blog)
+                    WITH u , f, p1, followScore, p2, likeScore,p3 , 3 AS commentScore
+
+                    // bookmarks 
+                    OPTIONAL MATCH (u)-[:bookmarked]->(p4:Blog)
+                    WITH u , f , p1 , followScore , p2 , likeScore , p3 , commentScore , p4 , 2 AS bookmarkScore
+                    
+                    WITH 
+                        COLLECT (DISTINCT {post:p1, score:followScore}) + 
+                        COLLECT (DISTINCT {post:p2, score:likeScore}) + 
+                        COLLECT (DISTINCT {post:p3, score:commentScore}) + 
+                        COLLECT (DISTINCT {post:p4,score:bookmarkScore}) AS scoredPosts
+
+                    UNWIND scoredPosts AS entry
+                    WITH entry.post AS post , entry.score AS score
+                    WHERE post IS NOT NULL
+
+                    WITH post , SUM(score) AS totalScore
+                    RETURN post 
+                    ORDER BY totalScore DESC , post.createdAt DESC
+                    LIMIT 20 
                 `
 
             //  this gives you all the users who you follow , 
